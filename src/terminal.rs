@@ -4,7 +4,6 @@ use std::io::{self, stdout, Write};
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::{IntoRawMode, RawTerminal};
-use termion::color;
 
 pub struct Size {
     pub width: u16,
@@ -17,6 +16,7 @@ pub struct Terminal {
 }
 
 impl Terminal {
+    #[allow(clippy::missing_errors_doc)]
     pub fn default() -> Result<Self, std::io::Error> {
         let size = termion::terminal_size()?;
 
@@ -29,6 +29,7 @@ impl Terminal {
         })
     }
 
+    #[must_use]
     pub fn size(&self) -> &Size {
         &self.size
     }
@@ -37,11 +38,11 @@ impl Terminal {
         print!("{}", termion::clear::All);
     }
 
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation, clippy::missing_panics_doc)]
     pub fn cursor_position(position: &Position) {
-        let Position{mut x, mut y} = position;
-        let x = x.saturating_add(1);
-        let y = y.saturating_add(1);
+        let Position{ mut x, mut y } = position;
+        x = x.saturating_add(1);
+        y = y.saturating_add(1);
 
         let x = x as u16;
         let y = y as u16;
@@ -49,10 +50,12 @@ impl Terminal {
         print!("{}", termion::cursor::Goto(x, y));
     }
 
+    #[allow(clippy::missing_errors_doc)]
     pub fn flush() -> Result<(), std::io::Error> {
         io::stdout().flush()
     }
 
+    #[allow(clippy::missing_errors_doc)]
     pub fn read_key() -> Result<Key, std::io::Error> {
         loop {
             if let Some(key) = io::stdin().lock().keys().next() {
@@ -71,22 +74,6 @@ impl Terminal {
 
     pub fn clear_current_line() {
         print!("{}", termion::clear::CurrentLine);
-    }
-
-    pub fn set_bg_color(color: color::Rgb) {
-        print!("{}", color::Bg(color));
-    }
-
-    pub fn reset_bg_color() {
-        print!("{}", color::Bg(color::Reset));
-    }
-
-    pub fn set_fg_color(color: color::Rgb) {
-        print!("{}", color::Fg(color));
-    }
-
-    pub fn reset_fg_color() {
-        print!("{}", color::Fg(color::Reset));
     }
 
     pub fn invert_style() {

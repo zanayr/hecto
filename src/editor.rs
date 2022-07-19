@@ -4,13 +4,12 @@ use super::Row;
 
 use std::env;
 use std::time::{Duration, Instant};
-// use termion::color;
 use termion::event::Key;
 
-// const STATUS_FG_COLOR: color::Rgb = color::Rgb(63, 63, 63);
-// const STATUS_BG_COLOR: color::Rgb = color::Rgb(239, 239, 239);
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const QUIT_CONFIRM: u8 = 3;
 
+#[non_exhaustive]
 #[derive(Default)]
 pub struct Position {
     pub x: usize,
@@ -38,12 +37,13 @@ pub struct Editor {
     document: Document,
     offset: Position,
     status_message: StatusMessage,
+    quit_confirm: u8,
 }
 
 impl Editor {
     pub fn run(&mut self) {
         loop {
-            if let Err(error) = self.refresh_sceen() {
+            if let Err(error) = self.refresh_screen() {
                 die(error);
             }
             if self.should_quit {
@@ -57,14 +57,13 @@ impl Editor {
 
     pub fn default() -> Self {
         let args: Vec<String> = env::args().collect();
-        let mut initial_status = String::from("HELP: Ctrl-Q = quit");
-        let document = if args.len() > 1 {
-            let file_name = &args[1];
-            let doc = Document::open(&file_name);
-            if doc.is_ok() {
-                doc.unwrap()
+        let mut initial_status = String::from("HELP: Ctrl-S = save | Ctrl-Q = quit");
+        let document = if let Some(file_name) = args.get(1) {
+            let doc = Document::open(file_name);
+            if let Ok(doc) = doc {
+                doc
             } else {
-                initial_status = format!("ERR: Could not open file: {}", file_name);
+                initial_status = format!("ERROR! Could not open file: {}", file_name);
                 Document::default()
             }
         } else {
@@ -78,10 +77,11 @@ impl Editor {
             document,
             offset: Position::default(),
             status_message: StatusMessage::from(initial_status),
+            quit_confirm: QUIT_CONFIRM,
         }
     }
 
-    fn refresh_sceen(&self) -> Result<(), std::io::Error> {
+    fn refresh_screen(&self) -> Result<(), std::io::Error> {
         Terminal::cursor_hide();
         Terminal::cursor_position(&Position::default());
         if self.should_quit {
@@ -100,10 +100,49 @@ impl Editor {
         Terminal::flush()
     }
 
+    fn save(&mut self) {
+        if self.document.file_name.is_none() {
+            let new_name = self.prompt("Save as: ").unwrap_or(None);
+            if new_name.is_none() {
+                self.status_message = StatusMessage::from("Save aborted.".to_owned());
+                return;
+            }
+            self.document.file_name = new_name;
+        }
+
+        if self.document.save().is_ok() {
+            self.status_message = StatusMessage::from("File saved successfully.".to_owned());
+        } else {
+            self.status_message = StatusMessage::from("Error writing file!".to_owned());
+        }
+    }
+
+    #[allow(clippy::integer_arithmetic)]
     fn process_keypress(&mut self) -> Result<(), std::io::Error> {
         let pressed_key = Terminal::read_key()?;
         match pressed_key {
-            Key::Ctrl('q') => self.should_quit = true,
+            Key::Ctrl('q') => {
+                if self.quit_confirm > 0 && self.document.is_dirty() {
+                    self.status_message = StatusMessage::from(format!(
+                        "WARNING! File has unsaved changes. Press Ctrl-Q {} more times to quit.",
+                        self.quit_confirm
+                    ));
+                    self.quit_confirm -= 1;
+                    return Ok(());
+                }
+            },
+            Key::Ctrl('s') => self.save(),
+            Key::Char(c) => {
+                self.document.insert(&self.cursor_position, c);
+                self.move_cursor(Key::Right);
+            },
+            Key::Delete => self.document.delete(&self.cursor_position),
+            Key::Backspace => {
+                if self.cursor_position.x > 0 || self.cursor_position.y > 0 {
+                    self.move_cursor(Key::Left);
+                    self.document.delete(&self.cursor_position);
+                }
+            },
             Key::Up
             | Key::Down
             | Key::Left
@@ -116,6 +155,10 @@ impl Editor {
         }
 
         self.scroll();
+        if self.quit_confirm < QUIT_CONFIRM {
+            self.quit_confirm = QUIT_CONFIRM;
+            self.status_message = StatusMessage::from(String::new());
+        }
         Ok(())
     }
 
@@ -143,7 +186,7 @@ impl Editor {
         let Position { mut x, mut y } = self.cursor_position;
 
         // Prevent the cursor from moving off screen
-        let size = self.terminal.size();
+        // let size = self.terminal.size();
         let height = self.document.len();
         let mut width = if let Some(row) = self.document.row(y) {
             row.len()
@@ -180,14 +223,14 @@ impl Editor {
             },
             Key::PageUp => {
                 y = if y > terminal_height {
-                    y - terminal_height
+                    y.saturating_sub(terminal_height)
                 } else {
                     0
                 }
             },
             Key::PageDown => {
                 y = if y.saturating_add(terminal_height) < height {
-                    y + terminal_height as usize
+                    y.saturating_add(terminal_height)
                 } else {
                     height
                 }
@@ -212,20 +255,33 @@ impl Editor {
         self.cursor_position = Position { x, y }
     }
 
+    fn draw_welcome_message(&self) {
+        let mut welcome_message = format!("Hecto editor -- version {}", VERSION);
+        let width = self.terminal.size().width as usize;
+        let len = welcome_message.len();
+        #[allow(clippy::integer_arithmetic, clippy::integer_division)]
+        let padding = width.saturating_sub(len) / 2;
+        let spaces = " ".repeat(padding.saturating_sub(1));
+        welcome_message = format!("~{}{}", spaces, welcome_message);
+        welcome_message.truncate(width);
+        println!("{}\r", welcome_message);
+    }
+
     fn draw_row(&self, row: &Row) {
         let width = self.terminal.size().width as usize;
         let start = self.offset.x;
-        let end = self.offset.x + width;
+        let end = self.offset.x.saturating_add(width);
         let row = row.render(start, end);
 
         println!("{}\r", row);
     }
 
+    #[allow(clippy::integer_arithmetic, clippy::integer_division)]
     fn draw_rows(&self) {
         let height = self.terminal.size().height;
         for terminal_row in 0..height {
             Terminal::clear_current_line();
-            if let Some(row) = self.document.row(terminal_row as usize + self.offset.y) {
+            if let Some(row) = self.document.row(self.offset.y.saturating_add(terminal_row as usize)) {
                 self.draw_row(row);
             } else if self.document.is_empty() && terminal_row == height / 3 {
                 self.draw_welcome_message();
@@ -235,49 +291,35 @@ impl Editor {
         }
     }
 
-    fn draw_welcome_message(&self) {
-        let mut welcome_message = format!("Hecto editor -- version {}", VERSION);
-        let width = self.terminal.size().width as usize;
-        let len = welcome_message.len();
-        let padding = width.saturating_sub(len) / 2;
-        let spaces = " ".repeat(padding.saturating_sub(1));
-
-        welcome_message = format!("~{}{}", spaces, welcome_message);
-        welcome_message.truncate(width);
-        println!("{}\r", welcome_message);
-    }
-
     fn draw_status_bar(&self) {
         let mut status;
         let width = self.terminal.size().width as usize;
-        let mut file_name = "[Untitled]".to_string();
+        let modified_indicator = if self.document.is_dirty() {
+            " (modified)"
+        } else {
+            ""
+        };
+        let mut file_name = "[Untitled]".to_owned();
         if let Some(name) = &self.document.file_name {
             file_name = name.clone();
             file_name.truncate(20);
         }
 
-        status = format!("{} | {} lines", file_name, self.document.len());
+        status = format!("{} | {} lines{}", file_name, self.document.len(), modified_indicator);
         let line_indicator = format!(
             "{}:{}",
             self.cursor_position.y.saturating_add(1),
             self.document.len()
         );
+        #[allow(clippy::integer_arithmetic)]
         let len = status.len() + line_indicator.len();
-        if width > len {
-            status.push_str(&" ".repeat(width - len));
-        }
+        status.push_str(&" ".repeat(width.saturating_sub(len)));
         status = format!("{}{}", status, line_indicator);
         status.truncate(width);
 
-        // Terminal::set_bg_color(STATUS_BG_COLOR);
-        // Terminal::set_fg_color(STATUS_FG_COLOR);
         Terminal::invert_style();
 
         println!("{}\r", status);
-
-        // Terminal::reset_bg_color();
-        // Terminal::reset_fg_color();
-        
     }
 
     fn draw_message_bar(&self) {
@@ -294,6 +336,35 @@ impl Editor {
         }
         
         Terminal::reset_style();
+    }
+
+    fn prompt(&mut self, prompt: &str) -> Result<Option<String>, std::io::Error> {
+        let mut result = String::new();
+
+        loop {
+            self.status_message = StatusMessage::from(format!("{}{}", prompt, result));
+            self.refresh_screen()?;
+
+            match Terminal::read_key()? {
+                Key::Backspace => result.truncate(result.len().saturating_sub(1)),
+                Key::Char('\n') => break,
+                Key::Char(c) => {
+                    if !c.is_control() {
+                        result.push(c);
+                    }
+                },
+                Key::Esc => {
+                    result.truncate(0);
+                    break;
+                },
+                _ => (),
+            }
+        }
+        self.status_message = StatusMessage::from(String::new());
+        if result.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(result))
     }
 }
 
