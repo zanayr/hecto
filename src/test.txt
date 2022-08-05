@@ -1,0 +1,5 @@
+Hello, world!
+This is a simple test of the 
+return method.
+
+I'm the coolest in the world!
